@@ -90,6 +90,124 @@ func TestRun_AddAndList(t *testing.T) {
 	}
 }
 
+// taskStatus reads a single Task's status and whether its completion time is
+// set, over a fresh connection.
+func taskStatus(t *testing.T, dbPath string, id int64) (status string, completedSet bool) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	var completed sql.NullString
+	if err := db.QueryRow("SELECT status, completed_at FROM tasks WHERE id = ?", id).
+		Scan(&status, &completed); err != nil {
+		t.Fatalf("query task %d: %v", id, err)
+	}
+	return status, completed.Valid && completed.String != ""
+}
+
+func TestRun_Lifecycle(t *testing.T) {
+	run, dbPath := newRunner(t)
+	run("add", "Write report")
+
+	if code, out, _ := run("start", "1"); code != 0 || !strings.Contains(out, "in-progress") {
+		t.Fatalf("start: code=%d out=%q", code, out)
+	}
+	if st, completed := taskStatus(t, dbPath, 1); st != "in-progress" || completed {
+		t.Errorf("after start: status=%q completed=%v, want in-progress / false", st, completed)
+	}
+
+	if code, _, _ := run("done", "1"); code != 0 {
+		t.Fatalf("done: code=%d", code)
+	}
+	if st, completed := taskStatus(t, dbPath, 1); st != "done" || !completed {
+		t.Errorf("after done: status=%q completed=%v, want done / true", st, completed)
+	}
+
+	// Default list hides Done; --all reveals it (Task stays on record).
+	if _, out, _ := run("list"); strings.Contains(out, "Write report") {
+		t.Errorf("default list should hide Done Task, got %q", out)
+	}
+	if _, out, _ := run("list", "--all"); !strings.Contains(out, "Write report") {
+		t.Errorf("list --all should show Done Task, got %q", out)
+	}
+
+	// Reopen clears the completion time.
+	if code, _, _ := run("reopen", "1"); code != 0 {
+		t.Fatalf("reopen: code=%d", code)
+	}
+	if st, completed := taskStatus(t, dbPath, 1); st != "open" || completed {
+		t.Errorf("after reopen: status=%q completed=%v, want open / false", st, completed)
+	}
+}
+
+func TestRun_ListStatusFilter(t *testing.T) {
+	run, _ := newRunner(t)
+	run("add", "Alpha")   // 1: open
+	run("add", "Bravo")   // 2: in-progress
+	run("start", "2")
+	run("add", "Charlie") // 3: done
+	run("done", "3")
+
+	if _, out, _ := run("list", "--status", "in-progress"); !strings.Contains(out, "Bravo") ||
+		strings.Contains(out, "Alpha") || strings.Contains(out, "Charlie") {
+		t.Errorf("--status in-progress = %q, want only Bravo", out)
+	}
+	if _, out, _ := run("list", "--status", "done"); !strings.Contains(out, "Charlie") ||
+		strings.Contains(out, "Alpha") || strings.Contains(out, "Bravo") {
+		t.Errorf("--status done = %q, want only Charlie", out)
+	}
+	if code, _, errs := run("list", "--status", "bogus"); code == 0 || errs == "" {
+		t.Errorf("invalid status should error: code=%d errs=%q", code, errs)
+	}
+}
+
+func TestRun_Show(t *testing.T) {
+	run, _ := newRunner(t)
+	run("add", "Inspect me")
+
+	code, out, _ := run("show", "1")
+	if code != 0 {
+		t.Fatalf("show: code=%d", code)
+	}
+	for _, sub := range []string{"#1", "Inspect me", "open"} {
+		if !strings.Contains(out, sub) {
+			t.Errorf("show output %q missing %q", out, sub)
+		}
+	}
+
+	run("done", "1")
+	if _, out, _ := run("show", "1"); !strings.Contains(strings.ToLower(out), "completed") {
+		t.Errorf("show after done should report completion, got %q", out)
+	}
+}
+
+func TestRun_UnknownID(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "start", args: []string{"start", "999"}},
+		{name: "done", args: []string{"done", "999"}},
+		{name: "reopen", args: []string{"reopen", "999"}},
+		{name: "show", args: []string{"show", "999"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			run, _ := newRunner(t)
+			run("add", "exists") // id 1 exists; 999 does not
+			code, _, errs := run(tt.args...)
+			if code == 0 {
+				t.Errorf("expected non-zero exit for unknown id")
+			}
+			if !strings.Contains(errs, "999") {
+				t.Errorf("error message %q should mention the id", errs)
+			}
+		})
+	}
+}
+
 func TestRun_LsAlias(t *testing.T) {
 	run, _ := newRunner(t)
 	run("add", "Task one")

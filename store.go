@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,10 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+// errNoSuchTask is returned by store operations that reference an id with no
+// matching Task row.
+var errNoSuchTask = errors.New("no such task")
 
 // Status is the lifecycle state of a Task. Transitions between any two
 // statuses are free; setting Done stamps a completion time and leaving Done
@@ -109,7 +114,10 @@ func (s *Store) ListTasks(f ListFilter) ([]Task, error) {
 	q := `SELECT ` + taskColumns + ` FROM tasks`
 	var where []string
 	var args []any
-	if !f.All {
+	if f.Status != nil {
+		where = append(where, "status = ?")
+		args = append(args, string(*f.Status))
+	} else if !f.All {
 		where = append(where, "status IN ('open','in-progress')")
 	}
 	if len(where) > 0 {
@@ -132,6 +140,44 @@ func (s *Store) ListTasks(f ListFilter) ([]Task, error) {
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// GetTask returns the Task with the given id, or errNoSuchTask if none exists.
+func (s *Store) GetTask(id int64) (Task, error) {
+	row := s.db.QueryRow(`SELECT `+taskColumns+` FROM tasks WHERE id = ?`, id)
+	t, err := scanTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Task{}, errNoSuchTask
+	}
+	if err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}
+
+// SetStatus moves a Task to the given status. Moving to Done stamps the
+// completion time; moving to any other status clears it. Returns
+// errNoSuchTask if the id does not exist.
+func (s *Store) SetStatus(id int64, status Status, now time.Time) error {
+	var completed any
+	if status == StatusDone {
+		completed = now.UTC().Format(tsLayout)
+	}
+	res, err := s.db.Exec(
+		`UPDATE tasks SET status = ?, completed_at = ? WHERE id = ?`,
+		string(status), completed, id,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errNoSuchTask
+	}
+	return nil
 }
 
 type rowScanner interface{ Scan(dest ...any) error }
