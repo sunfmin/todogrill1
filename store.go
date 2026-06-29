@@ -393,18 +393,26 @@ func scanTask(sc rowScanner) (Task, error) {
 		return Task{}, err
 	}
 	t := Task{ID: id, Title: title, Status: Status(status), Notes: notes}
+	// We always write well-formed timestamps and dates, so a parse failure
+	// here means corruption — surface it rather than return a zero-value Task.
 	if due.Valid && due.String != "" {
-		if d, ok := parseStoredDay(due.String); ok {
-			t.Due = &d
+		d, ok := parseStoredDay(due.String)
+		if !ok {
+			return Task{}, fmt.Errorf("task %d: unparseable due %q", id, due.String)
 		}
+		t.Due = &d
 	}
-	if c, err := time.Parse(tsLayout, created); err == nil {
-		t.CreatedAt = c
+	c, err := time.Parse(tsLayout, created)
+	if err != nil {
+		return Task{}, fmt.Errorf("task %d: unparseable created_at %q: %w", id, created, err)
 	}
+	t.CreatedAt = c
 	if completed.Valid && completed.String != "" {
-		if c, err := time.Parse(tsLayout, completed.String); err == nil {
-			t.CompletedAt = &c
+		cc, err := time.Parse(tsLayout, completed.String)
+		if err != nil {
+			return Task{}, fmt.Errorf("task %d: unparseable completed_at %q: %w", id, completed.String, err)
 		}
+		t.CompletedAt = &cc
 	}
 	return t, nil
 }

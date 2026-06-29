@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 )
 
 func TestParseDue(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 6, 29, 14, 30, 0, 0, time.UTC)
 	tests := []struct {
 		name    string
@@ -27,10 +29,15 @@ func TestParseDue(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := parseDue(tt.give, now)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("parseDue(%q) = %v, want error", tt.give, got)
+				}
+				// The CLI surfaces this message verbatim; lock its shape.
+				if !strings.Contains(err.Error(), "invalid due date") {
+					t.Errorf("parseDue(%q) error = %q, want it to mention %q", tt.give, err, "invalid due date")
 				}
 				return
 			}

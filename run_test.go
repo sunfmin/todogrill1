@@ -61,6 +61,7 @@ func dumpTasks(t *testing.T, dbPath string) []dbRow {
 }
 
 func TestRun_AddAndList(t *testing.T) {
+	t.Parallel()
 	run, dbPath := newRunner(t)
 
 	if code, out, errs := run("add", "Buy milk"); code != 0 || !strings.Contains(out, "#1") || errs != "" {
@@ -109,6 +110,7 @@ func taskStatus(t *testing.T, dbPath string, id int64) (status string, completed
 }
 
 func TestRun_Lifecycle(t *testing.T) {
+	t.Parallel()
 	run, dbPath := newRunner(t)
 	run("add", "Write report")
 
@@ -144,6 +146,7 @@ func TestRun_Lifecycle(t *testing.T) {
 }
 
 func TestRun_ListStatusFilter(t *testing.T) {
+	t.Parallel()
 	run, _ := newRunner(t)
 	run("add", "Alpha") // 1: open
 	run("add", "Bravo") // 2: in-progress
@@ -165,6 +168,7 @@ func TestRun_ListStatusFilter(t *testing.T) {
 }
 
 func TestRun_Show(t *testing.T) {
+	t.Parallel()
 	run, _ := newRunner(t)
 	run("add", "Inspect me")
 
@@ -179,12 +183,13 @@ func TestRun_Show(t *testing.T) {
 	}
 
 	run("done", "1")
-	if _, out, _ := run("show", "1"); !strings.Contains(strings.ToLower(out), "completed") {
-		t.Errorf("show after done should report completion, got %q", out)
+	if _, out, _ := run("show", "1"); !strings.Contains(out, "Done at:") {
+		t.Errorf("show after done should report the completion time, got %q", out)
 	}
 }
 
 func TestRun_UnknownID(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args []string
@@ -196,6 +201,7 @@ func TestRun_UnknownID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			run, _ := newRunner(t)
 			run("add", "exists") // id 1 exists; 999 does not
 			code, _, errs := run(tt.args...)
@@ -245,6 +251,7 @@ func inOrder(haystack string, subs []string) bool {
 }
 
 func TestRun_DueDate(t *testing.T) {
+	t.Parallel()
 	run, dbPath := newRunner(t)
 	if code, _, errs := run("add", "Taxes", "--due", "2026-07-15"); code != 0 || errs != "" {
 		t.Fatalf("add --due: code=%d errs=%q", code, errs)
@@ -261,6 +268,7 @@ func TestRun_DueDate(t *testing.T) {
 }
 
 func TestRun_DueRelative(t *testing.T) {
+	t.Parallel()
 	run, dbPath := newRunner(t)
 	run("add", "Standup", "--due", "today")
 	want := time.Now().Format("2006-01-02")
@@ -270,6 +278,7 @@ func TestRun_DueRelative(t *testing.T) {
 }
 
 func TestRun_DueInvalid(t *testing.T) {
+	t.Parallel()
 	run, dbPath := newRunner(t)
 	code, _, errs := run("add", "Bad date", "--due", "someday")
 	if code == 0 || errs == "" {
@@ -281,6 +290,7 @@ func TestRun_DueInvalid(t *testing.T) {
 }
 
 func TestRun_DueOrdering(t *testing.T) {
+	t.Parallel()
 	run, _ := newRunner(t)
 	run("add", "Zeta")                         // 1: undated
 	run("add", "Later", "--due", "2026-08-01") // 2
@@ -336,6 +346,7 @@ func countTagRows(t *testing.T, dbPath, name string) int {
 }
 
 func TestRun_Tags(t *testing.T) {
+	t.Parallel()
 	run, dbPath := newRunner(t)
 	if code, _, errs := run("add", "Mow lawn", "--tag", "home", "--tag", "weekend"); code != 0 || errs != "" {
 		t.Fatalf("add --tag: code=%d errs=%q", code, errs)
@@ -352,6 +363,7 @@ func TestRun_Tags(t *testing.T) {
 }
 
 func TestRun_TagReuseNoDuplicate(t *testing.T) {
+	t.Parallel()
 	run, dbPath := newRunner(t)
 	run("add", "First", "--tag", "errand")
 	run("add", "Second", "--tag", "errand")
@@ -365,6 +377,7 @@ func TestRun_TagReuseNoDuplicate(t *testing.T) {
 }
 
 func TestRun_ListTagFilter(t *testing.T) {
+	t.Parallel()
 	run, _ := newRunner(t)
 	run("add", "Groceries", "--tag", "home")
 	run("add", "Deploy", "--tag", "work")
@@ -414,6 +427,7 @@ func countTaskTags(t *testing.T, dbPath string, taskID int64) int {
 }
 
 func TestRun_Note(t *testing.T) {
+	t.Parallel()
 	run, dbPath := newRunner(t)
 	run("add", "Call plumber", "--note", "leak under sink")
 
@@ -431,6 +445,7 @@ func TestRun_Note(t *testing.T) {
 }
 
 func TestRun_EditTitle(t *testing.T) {
+	t.Parallel()
 	run, dbPath := newRunner(t)
 	run("add", "Bye milk") // typo
 	if code, _, errs := run("edit", "1", "--title", "Buy milk"); code != 0 || errs != "" {
@@ -442,6 +457,7 @@ func TestRun_EditTitle(t *testing.T) {
 }
 
 func TestRun_EditDueSetAndClear(t *testing.T) {
+	t.Parallel()
 	run, dbPath := newRunner(t)
 	run("add", "Renew passport", "--due", "2026-07-01")
 
@@ -461,6 +477,7 @@ func TestRun_EditDueSetAndClear(t *testing.T) {
 }
 
 func TestRun_EditTags(t *testing.T) {
+	t.Parallel()
 	run, dbPath := newRunner(t)
 	run("add", "Plan trip", "--tag", "old")
 	run("edit", "1", "--add-tag", "travel", "--add-tag", "fun", "--rm-tag", "old")
@@ -471,6 +488,7 @@ func TestRun_EditTags(t *testing.T) {
 }
 
 func TestRun_RmCascadeAndIDStable(t *testing.T) {
+	t.Parallel()
 	run, dbPath := newRunner(t)
 	run("add", "First", "--tag", "x") // id 1
 	run("add", "Second")              // id 2
@@ -499,15 +517,18 @@ func TestRun_RmCascadeAndIDStable(t *testing.T) {
 }
 
 func TestRun_EditRmUnknownID(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args []string
 	}{
-		{name: "edit", args: []string{"edit", "999", "--title", "x"}},
+		{name: "edit title", args: []string{"edit", "999", "--title", "x"}},
+		{name: "edit tags only", args: []string{"edit", "999", "--add-tag", "x"}},
 		{name: "rm", args: []string{"rm", "999"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			run, _ := newRunner(t)
 			run("add", "exists")
 			code, _, errs := run(tt.args...)
@@ -522,6 +543,7 @@ func TestRun_EditRmUnknownID(t *testing.T) {
 }
 
 func TestRun_LsAlias(t *testing.T) {
+	t.Parallel()
 	run, _ := newRunner(t)
 	run("add", "Task one")
 	code, out, _ := run("ls")
@@ -531,6 +553,7 @@ func TestRun_LsAlias(t *testing.T) {
 }
 
 func TestRun_Help(t *testing.T) {
+	t.Parallel()
 	run, _ := newRunner(t)
 	code, out, _ := run("help")
 	if code != 0 {
@@ -542,6 +565,7 @@ func TestRun_Help(t *testing.T) {
 }
 
 func TestRun_Errors(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args []string
@@ -552,6 +576,7 @@ func TestRun_Errors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			run, _ := newRunner(t)
 			code, _, errs := run(tt.args...)
 			if code == 0 {

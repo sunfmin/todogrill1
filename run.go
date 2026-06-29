@@ -359,7 +359,7 @@ func writeDetail(w io.Writer, t Task) {
 	}
 	fmt.Fprintf(w, "  Created:   %s\n", t.CreatedAt.Local().Format("2006-01-02 15:04"))
 	if t.CompletedAt != nil {
-		fmt.Fprintf(w, "  Completed: %s\n", t.CompletedAt.Local().Format("2006-01-02 15:04"))
+		fmt.Fprintf(w, "  Done at:   %s\n", t.CompletedAt.Local().Format("2006-01-02 15:04"))
 	}
 }
 
