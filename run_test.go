@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	_ "modernc.org/sqlite"
@@ -205,6 +206,92 @@ func TestRun_UnknownID(t *testing.T) {
 				t.Errorf("error message %q should mention the id", errs)
 			}
 		})
+	}
+}
+
+// taskDue reads a single Task's stored due date over a fresh connection.
+func taskDue(t *testing.T, dbPath string, id int64) (due string, set bool) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	var d sql.NullString
+	if err := db.QueryRow("SELECT due FROM tasks WHERE id = ?", id).Scan(&d); err != nil {
+		t.Fatalf("query due for %d: %v", id, err)
+	}
+	if !d.Valid || d.String == "" {
+		return "", false
+	}
+	// The driver normalises DATE columns to RFC3339 on read; reduce to the day.
+	if parsed, err := time.Parse(time.RFC3339, d.String); err == nil {
+		return parsed.Format("2006-01-02"), true
+	}
+	return d.String, true
+}
+
+// inOrder reports whether each sub appears in haystack, in the given order.
+func inOrder(haystack string, subs []string) bool {
+	idx := 0
+	for _, s := range subs {
+		i := strings.Index(haystack[idx:], s)
+		if i < 0 {
+			return false
+		}
+		idx += i + len(s)
+	}
+	return true
+}
+
+func TestRun_DueDate(t *testing.T) {
+	run, dbPath := newRunner(t)
+	if code, _, errs := run("add", "Taxes", "--due", "2026-07-15"); code != 0 || errs != "" {
+		t.Fatalf("add --due: code=%d errs=%q", code, errs)
+	}
+	if due, set := taskDue(t, dbPath, 1); !set || due != "2026-07-15" {
+		t.Errorf("stored due = %q (set=%v), want 2026-07-15", due, set)
+	}
+	if _, out, _ := run("list"); !strings.Contains(out, "2026-07-15") {
+		t.Errorf("list should display the due date, got %q", out)
+	}
+	if _, out, _ := run("show", "1"); !strings.Contains(out, "2026-07-15") {
+		t.Errorf("show should display the due date, got %q", out)
+	}
+}
+
+func TestRun_DueRelative(t *testing.T) {
+	run, dbPath := newRunner(t)
+	run("add", "Standup", "--due", "today")
+	want := time.Now().Format("2006-01-02")
+	if due, set := taskDue(t, dbPath, 1); !set || due != want {
+		t.Errorf("due for 'today' = %q (set=%v), want %q", due, set, want)
+	}
+}
+
+func TestRun_DueInvalid(t *testing.T) {
+	run, dbPath := newRunner(t)
+	code, _, errs := run("add", "Bad date", "--due", "someday")
+	if code == 0 || errs == "" {
+		t.Errorf("invalid due should error: code=%d errs=%q", code, errs)
+	}
+	if rows := dumpTasks(t, dbPath); len(rows) != 0 {
+		t.Errorf("invalid due should create no Task, got %d rows", len(rows))
+	}
+}
+
+func TestRun_DueOrdering(t *testing.T) {
+	run, _ := newRunner(t)
+	run("add", "Zeta")                         // 1: undated
+	run("add", "Later", "--due", "2026-08-01") // 2
+	run("add", "Soon", "--due", "2026-07-01")  // 3
+	run("add", "Omega")                        // 4: undated
+
+	// Soonest due first, undated last (ordered among themselves by id).
+	want := []string{"Soon", "Later", "Zeta", "Omega"}
+	_, out, _ := run("list")
+	if !inOrder(out, want) {
+		t.Errorf("list ordering wrong.\noutput:\n%s\nwant order: %v", out, want)
 	}
 }
 

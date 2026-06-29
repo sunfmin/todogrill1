@@ -75,19 +75,32 @@ func Run(args []string, stdout, stderr io.Writer, dbPath string) int {
 func cmdAdd(st *Store, args []string, stdout, stderr io.Writer, now time.Time) int {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	due := fs.String("due", "", "due date: YYYY-MM-DD, today, or tomorrow")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: todo add <title>")
+		fmt.Fprintln(stderr, "Usage: todo add <title> [--due <date>]")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
+	rest, err := parseFlagsPermuted(fs, args)
+	if err != nil {
 		return 2
 	}
-	title := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	title := strings.TrimSpace(strings.Join(rest, " "))
 	if title == "" {
 		fmt.Fprintln(stderr, "todo: add requires a title")
 		return 2
 	}
-	id, err := st.AddTask(title, nil, "", nil, now)
+
+	var duePtr *time.Time
+	if *due != "" {
+		d, err := parseDue(*due, now)
+		if err != nil {
+			fmt.Fprintf(stderr, "todo: %v\n", err)
+			return 2
+		}
+		duePtr = &d
+	}
+
+	id, err := st.AddTask(title, duePtr, "", nil, now)
 	if err != nil {
 		fmt.Fprintf(stderr, "todo: %v\n", err)
 		return 1
@@ -165,6 +178,24 @@ func cmdSetStatus(st *Store, args []string, stdout, stderr io.Writer, name strin
 	}
 	fmt.Fprintf(stdout, "Task #%d → %s\n", id, status)
 	return 0
+}
+
+// parseFlagsPermuted parses fs allowing flags to appear before or after the
+// positional arguments, unlike flag.FlagSet.Parse which stops at the first
+// non-flag token. It returns the collected positional arguments.
+func parseFlagsPermuted(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positionals []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return positionals, nil
+		}
+		positionals = append(positionals, rest[0])
+		args = rest[1:]
+	}
 }
 
 // parseSingleID parses the single <id> argument shared by show/start/done/

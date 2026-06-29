@@ -123,7 +123,8 @@ func (s *Store) ListTasks(f ListFilter) ([]Task, error) {
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
-	q += " ORDER BY id"
+	// Most urgent first: by due date (soonest first), undated last, then id.
+	q += " ORDER BY due IS NULL, due ASC, id ASC"
 
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -180,6 +181,18 @@ func (s *Store) SetStatus(id int64, status Status, now time.Time) error {
 	return nil
 }
 
+// parseStoredDay reads a due value back into a day-granularity time in UTC.
+// The pure-Go SQLite driver normalises DATE columns to RFC3339 on read, so we
+// accept both that and a bare YYYY-MM-DD, then collapse to the date.
+func parseStoredDay(s string) (time.Time, bool) {
+	for _, layout := range []string{time.RFC3339, dayLayout} {
+		if d, err := time.Parse(layout, s); err == nil {
+			return dayOf(d.UTC()), true
+		}
+	}
+	return time.Time{}, false
+}
+
 type rowScanner interface{ Scan(dest ...any) error }
 
 func scanTask(sc rowScanner) (Task, error) {
@@ -194,7 +207,7 @@ func scanTask(sc rowScanner) (Task, error) {
 	}
 	t := Task{ID: id, Title: title, Status: Status(status), Notes: notes}
 	if due.Valid && due.String != "" {
-		if d, err := time.Parse(dayLayout, due.String); err == nil {
+		if d, ok := parseStoredDay(due.String); ok {
 			t.Due = &d
 		}
 	}
