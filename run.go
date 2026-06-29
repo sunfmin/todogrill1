@@ -23,6 +23,8 @@ Commands:
   start <id>    Mark a Task In-progress
   done <id>     Mark a Task Done
   reopen <id>   Reopen a Task (back to Open)
+  edit <id>     Change a Task's title, due date, Tags, or note
+  rm <id>       Delete a Task
   help          Show this help
 
 Run "todo <command> -h" for command-specific help.
@@ -75,6 +77,10 @@ func Run(args []string, stdout, stderr io.Writer, dbPath string) int {
 		return cmdSetStatus(st, rest, stdout, stderr, "done", StatusDone, now)
 	case "reopen":
 		return cmdSetStatus(st, rest, stdout, stderr, "reopen", StatusOpen, now)
+	case "edit":
+		return cmdEdit(st, rest, stdout, stderr, now)
+	case "rm":
+		return cmdRm(st, rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "todo: unknown command %q\n\n", cmd)
 		printUsage(stderr)
@@ -86,10 +92,11 @@ func cmdAdd(st *Store, args []string, stdout, stderr io.Writer, now time.Time) i
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	due := fs.String("due", "", "due date: YYYY-MM-DD, today, or tomorrow")
+	note := fs.String("note", "", "free-form note")
 	var tags stringSlice
 	fs.Var(&tags, "tag", "Tag to attach (repeatable)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: todo add <title> [--due <date>] [--tag <name> ...]")
+		fmt.Fprintln(stderr, "Usage: todo add <title> [--due <date>] [--tag <name> ...] [--note <text>]")
 		fs.PrintDefaults()
 	}
 	rest, err := parseFlagsPermuted(fs, args)
@@ -112,7 +119,7 @@ func cmdAdd(st *Store, args []string, stdout, stderr io.Writer, now time.Time) i
 		duePtr = &d
 	}
 
-	id, err := st.AddTask(title, duePtr, "", tags, now)
+	id, err := st.AddTask(title, duePtr, *note, tags, now)
 	if err != nil {
 		fmt.Fprintf(stderr, "todo: %v\n", err)
 		return 1
@@ -190,6 +197,89 @@ func cmdSetStatus(st *Store, args []string, stdout, stderr io.Writer, name strin
 		return reportTaskErr(stderr, id, err)
 	}
 	fmt.Fprintf(stdout, "Task #%d → %s\n", id, status)
+	return 0
+}
+
+func cmdEdit(st *Store, args []string, stdout, stderr io.Writer, now time.Time) int {
+	fs := flag.NewFlagSet("edit", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	title := fs.String("title", "", "new title")
+	due := fs.String("due", "", "new due date: YYYY-MM-DD, today, or tomorrow")
+	clearDue := fs.Bool("clear-due", false, "remove the due date")
+	note := fs.String("note", "", "new note")
+	var addTags, rmTags stringSlice
+	fs.Var(&addTags, "add-tag", "Tag to add (repeatable)")
+	fs.Var(&rmTags, "rm-tag", "Tag to remove (repeatable)")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: todo edit <id> [--title <text>] [--due <date> | --clear-due] [--add-tag <name> ...] [--rm-tag <name> ...] [--note <text>]")
+		fs.PrintDefaults()
+	}
+
+	rest, err := parseFlagsPermuted(fs, args)
+	if err != nil {
+		return 2
+	}
+	if len(rest) != 1 {
+		fmt.Fprintln(stderr, "todo: edit requires a single task id")
+		return 2
+	}
+	id, err := strconv.ParseInt(rest[0], 10, 64)
+	if err != nil {
+		fmt.Fprintf(stderr, "todo: invalid task id %q\n", rest[0])
+		return 2
+	}
+
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if !set["title"] && !set["due"] && !*clearDue && !set["note"] &&
+		len(addTags) == 0 && len(rmTags) == 0 {
+		fmt.Fprintln(stderr, "todo: edit needs at least one change (--title, --due, --clear-due, --add-tag, --rm-tag, --note)")
+		return 2
+	}
+	if set["due"] && *clearDue {
+		fmt.Fprintln(stderr, "todo: --due and --clear-due cannot be used together")
+		return 2
+	}
+
+	var e TaskEdit
+	if set["title"] {
+		if strings.TrimSpace(*title) == "" {
+			fmt.Fprintln(stderr, "todo: title cannot be empty")
+			return 2
+		}
+		e.Title = title
+	}
+	e.ClearDue = *clearDue
+	if set["due"] {
+		d, err := parseDue(*due, now)
+		if err != nil {
+			fmt.Fprintf(stderr, "todo: %v\n", err)
+			return 2
+		}
+		e.Due = &d
+	}
+	if set["note"] {
+		e.Notes = note
+	}
+	e.AddTags = addTags
+	e.RmTags = rmTags
+
+	if err := st.EditTask(id, e); err != nil {
+		return reportTaskErr(stderr, id, err)
+	}
+	fmt.Fprintf(stdout, "Updated task #%d\n", id)
+	return 0
+}
+
+func cmdRm(st *Store, args []string, stdout, stderr io.Writer) int {
+	id, ok := parseSingleID("rm", args, stderr)
+	if !ok {
+		return 2
+	}
+	if err := st.DeleteTask(id); err != nil {
+		return reportTaskErr(stderr, id, err)
+	}
+	fmt.Fprintf(stdout, "Deleted task #%d\n", id)
 	return 0
 }
 

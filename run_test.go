@@ -379,6 +379,148 @@ func TestRun_ListTagFilter(t *testing.T) {
 	}
 }
 
+// taskRow reads a Task's title and notes; exists reports whether the row is
+// present at all.
+func taskRow(t *testing.T, dbPath string, id int64) (title, notes string, exists bool) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	err = db.QueryRow("SELECT title, notes FROM tasks WHERE id = ?", id).Scan(&title, &notes)
+	if err == sql.ErrNoRows {
+		return "", "", false
+	}
+	if err != nil {
+		t.Fatalf("query task %d: %v", id, err)
+	}
+	return title, notes, true
+}
+
+// countTaskTags counts a Task's task_tags link rows.
+func countTaskTags(t *testing.T, dbPath string, taskID int64) int {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow("SELECT count(*) FROM task_tags WHERE task_id = ?", taskID).Scan(&n); err != nil {
+		t.Fatalf("count task_tags: %v", err)
+	}
+	return n
+}
+
+func TestRun_Note(t *testing.T) {
+	run, dbPath := newRunner(t)
+	run("add", "Call plumber", "--note", "leak under sink")
+
+	if _, notes, _ := taskRow(t, dbPath, 1); notes != "leak under sink" {
+		t.Errorf("stored note = %q, want %q", notes, "leak under sink")
+	}
+	if _, out, _ := run("show", "1"); !strings.Contains(out, "leak under sink") {
+		t.Errorf("show should display the note, got %q", out)
+	}
+
+	run("edit", "1", "--note", "fixed, monitor for a week")
+	if _, notes, _ := taskRow(t, dbPath, 1); notes != "fixed, monitor for a week" {
+		t.Errorf("after edit --note, note = %q", notes)
+	}
+}
+
+func TestRun_EditTitle(t *testing.T) {
+	run, dbPath := newRunner(t)
+	run("add", "Bye milk") // typo
+	if code, _, errs := run("edit", "1", "--title", "Buy milk"); code != 0 || errs != "" {
+		t.Fatalf("edit --title: code=%d errs=%q", code, errs)
+	}
+	if title, _, _ := taskRow(t, dbPath, 1); title != "Buy milk" {
+		t.Errorf("title after edit = %q, want %q", title, "Buy milk")
+	}
+}
+
+func TestRun_EditDueSetAndClear(t *testing.T) {
+	run, dbPath := newRunner(t)
+	run("add", "Renew passport", "--due", "2026-07-01")
+
+	run("edit", "1", "--due", "2026-09-30")
+	if due, set := taskDue(t, dbPath, 1); !set || due != "2026-09-30" {
+		t.Errorf("after edit --due, due = %q (set=%v), want 2026-09-30", due, set)
+	}
+
+	run("edit", "1", "--clear-due")
+	if due, set := taskDue(t, dbPath, 1); set {
+		t.Errorf("after --clear-due, due = %q (set=%v), want cleared", due, set)
+	}
+
+	if code, _, errs := run("edit", "1", "--due", "2026-01-01", "--clear-due"); code == 0 || errs == "" {
+		t.Errorf("--due with --clear-due should error: code=%d errs=%q", code, errs)
+	}
+}
+
+func TestRun_EditTags(t *testing.T) {
+	run, dbPath := newRunner(t)
+	run("add", "Plan trip", "--tag", "old")
+	run("edit", "1", "--add-tag", "travel", "--add-tag", "fun", "--rm-tag", "old")
+
+	if diff := cmp.Diff([]string{"fun", "travel"}, taskTags(t, dbPath, 1)); diff != "" {
+		t.Errorf("tags after edit mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestRun_RmCascadeAndIDStable(t *testing.T) {
+	run, dbPath := newRunner(t)
+	run("add", "First", "--tag", "x") // id 1
+	run("add", "Second")              // id 2
+
+	if code, _, errs := run("rm", "1"); code != 0 || errs != "" {
+		t.Fatalf("rm: code=%d errs=%q", code, errs)
+	}
+	if _, _, exists := taskRow(t, dbPath, 1); exists {
+		t.Errorf("task 1 should be gone after rm")
+	}
+	if n := countTaskTags(t, dbPath, 1); n != 0 {
+		t.Errorf("task 1 tag links should cascade away, got %d", n)
+	}
+	if _, out, _ := run("list", "--all"); strings.Contains(out, "First") {
+		t.Errorf("deleted Task should not appear in any listing, got %q", out)
+	}
+
+	// The retired id is not reused: the next add gets id 3, not 1.
+	run("add", "Third")
+	if title, _, exists := taskRow(t, dbPath, 3); !exists || title != "Third" {
+		t.Errorf("next add should take id 3 (no reuse), got title=%q exists=%v", title, exists)
+	}
+	if _, _, exists := taskRow(t, dbPath, 1); exists {
+		t.Errorf("id 1 must stay retired, but a row reappeared at id 1")
+	}
+}
+
+func TestRun_EditRmUnknownID(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "edit", args: []string{"edit", "999", "--title", "x"}},
+		{name: "rm", args: []string{"rm", "999"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			run, _ := newRunner(t)
+			run("add", "exists")
+			code, _, errs := run(tt.args...)
+			if code == 0 {
+				t.Errorf("expected non-zero exit for unknown id")
+			}
+			if !strings.Contains(errs, "999") {
+				t.Errorf("error %q should mention the id", errs)
+			}
+		})
+	}
+}
+
 func TestRun_LsAlias(t *testing.T) {
 	run, _ := newRunner(t)
 	run("add", "Task one")

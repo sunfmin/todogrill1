@@ -47,6 +47,17 @@ type ListFilter struct {
 	Tag    string  // restrict to Tasks carrying this Tag
 }
 
+// TaskEdit describes a partial update to a Task. Nil pointers and empty slices
+// mean "leave unchanged"; ClearDue removes the due date.
+type TaskEdit struct {
+	Title    *string
+	Due      *time.Time
+	ClearDue bool
+	Notes    *string
+	AddTags  []string
+	RmTags   []string
+}
+
 // Store is the SQLite-backed persistence layer.
 type Store struct{ db *sql.DB }
 
@@ -283,6 +294,90 @@ func parseStoredDay(s string) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+// EditTask applies a partial update to a Task, returning errNoSuchTask if the
+// id does not exist. Column changes and Tag link changes are one transaction.
+func (s *Store) EditTask(id int64, e TaskEdit) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var exists int
+	if err := tx.QueryRow(`SELECT 1 FROM tasks WHERE id = ?`, id).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errNoSuchTask
+		}
+		return err
+	}
+
+	var sets []string
+	var args []any
+	if e.Title != nil {
+		sets = append(sets, "title = ?")
+		args = append(args, *e.Title)
+	}
+	if e.ClearDue {
+		sets = append(sets, "due = NULL")
+	} else if e.Due != nil {
+		sets = append(sets, "due = ?")
+		args = append(args, e.Due.Format(dayLayout))
+	}
+	if e.Notes != nil {
+		sets = append(sets, "notes = ?")
+		args = append(args, *e.Notes)
+	}
+	if len(sets) > 0 {
+		args = append(args, id)
+		if _, err := tx.Exec(`UPDATE tasks SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
+			return err
+		}
+	}
+
+	if err := linkTags(tx, id, e.AddTags); err != nil {
+		return err
+	}
+	if err := removeTags(tx, id, e.RmTags); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// removeTags unlinks each named Tag from the Task. Unknown names and Tags the
+// Task does not carry are silently ignored.
+func removeTags(tx *sql.Tx, taskID int64, tags []string) error {
+	for _, name := range tags {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, err := tx.Exec(
+			`DELETE FROM task_tags WHERE task_id = ? AND tag_id = (SELECT id FROM tags WHERE name = ?)`,
+			taskID, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteTask hard-deletes a Task; its task_tags links are removed by cascade.
+// AUTOINCREMENT guarantees the freed id is never reused. Returns errNoSuchTask
+// if the id does not exist.
+func (s *Store) DeleteTask(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM tasks WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errNoSuchTask
+	}
+	return nil
 }
 
 type rowScanner interface{ Scan(dest ...any) error }
