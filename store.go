@@ -55,16 +55,26 @@ const (
 	dayLayout = "2006-01-02"  // due (day granularity)
 )
 
-const schema = `
-CREATE TABLE IF NOT EXISTS tasks (
-	id           INTEGER PRIMARY KEY AUTOINCREMENT,
-	title        TEXT NOT NULL,
-	status       TEXT NOT NULL DEFAULT 'open',
-	due          DATE NULL,
-	notes        TEXT NOT NULL DEFAULT '',
-	created_at   TIMESTAMP NOT NULL,
-	completed_at TIMESTAMP NULL
-);`
+var schemaStmts = []string{
+	`CREATE TABLE IF NOT EXISTS tasks (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		title        TEXT NOT NULL,
+		status       TEXT NOT NULL DEFAULT 'open',
+		due          DATE NULL,
+		notes        TEXT NOT NULL DEFAULT '',
+		created_at   TIMESTAMP NOT NULL,
+		completed_at TIMESTAMP NULL
+	);`,
+	`CREATE TABLE IF NOT EXISTS tags (
+		id   INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL UNIQUE
+	);`,
+	`CREATE TABLE IF NOT EXISTS task_tags (
+		task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+		tag_id  INTEGER NOT NULL REFERENCES tags(id),
+		PRIMARY KEY (task_id, tag_id)
+	);`,
+}
 
 // openStore opens (creating if necessary) the SQLite database at path,
 // creating its parent directory and the schema idempotently.
@@ -74,37 +84,78 @@ func openStore(path string) (*Store, error) {
 			return nil, fmt.Errorf("creating db directory: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	// Enable foreign keys via the DSN so the pragma applies to every pooled
+	// connection (a one-off PRAGMA would only affect a single connection),
+	// which is what makes ON DELETE CASCADE reliable.
+	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
-	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enabling foreign keys: %w", err)
-	}
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("creating schema: %w", err)
+	for _, stmt := range schemaStmts {
+		if _, err := db.Exec(stmt); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("creating schema: %w", err)
+		}
 	}
 	return &Store{db: db}, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
 
-// AddTask inserts a new Task in status Open and returns its stable id.
+// AddTask inserts a new Task in status Open with any due date, note, and Tags,
+// and returns its stable id. Tags are get-or-created and linked.
 func (s *Store) AddTask(title string, due *time.Time, notes string, tags []string, now time.Time) (int64, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
 	var dueVal any
 	if due != nil {
 		dueVal = due.Format(dayLayout)
 	}
-	res, err := s.db.Exec(
+	res, err := tx.Exec(
 		`INSERT INTO tasks(title, status, due, notes, created_at) VALUES (?, ?, ?, ?, ?)`,
 		title, string(StatusOpen), dueVal, notes, now.UTC().Format(tsLayout),
 	)
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if err := linkTags(tx, id, tags); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// linkTags get-or-creates each Tag by name and links it to the Task. Blank
+// names are skipped and re-using an existing name does not create a duplicate.
+func linkTags(tx *sql.Tx, taskID int64, tags []string) error {
+	for _, name := range tags {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO tags(name) VALUES (?) ON CONFLICT(name) DO NOTHING`, name); err != nil {
+			return err
+		}
+		var tagID int64
+		if err := tx.QueryRow(`SELECT id FROM tags WHERE name = ?`, name).Scan(&tagID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO task_tags(task_id, tag_id) VALUES (?, ?)`, taskID, tagID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const taskColumns = `id, title, status, due, notes, created_at, completed_at`
@@ -119,6 +170,11 @@ func (s *Store) ListTasks(f ListFilter) ([]Task, error) {
 		args = append(args, string(*f.Status))
 	} else if !f.All {
 		where = append(where, "status IN ('open','in-progress')")
+	}
+	if f.Tag != "" {
+		where = append(where,
+			"id IN (SELECT tt.task_id FROM task_tags tt JOIN tags t ON t.id = tt.tag_id WHERE t.name = ?)")
+		args = append(args, f.Tag)
 	}
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
@@ -140,7 +196,38 @@ func (s *Store) ListTasks(f ListFilter) ([]Task, error) {
 		}
 		out = append(out, t)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		tags, err := s.tagsFor(out[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Tags = tags
+	}
+	return out, nil
+}
+
+// tagsFor returns a Task's Tag names, ordered by name for stable display.
+func (s *Store) tagsFor(taskID int64) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT t.name FROM tags t JOIN task_tags tt ON tt.tag_id = t.id WHERE tt.task_id = ? ORDER BY t.name`,
+		taskID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
 }
 
 // GetTask returns the Task with the given id, or errNoSuchTask if none exists.
@@ -153,6 +240,11 @@ func (s *Store) GetTask(id int64) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
+	tags, err := s.tagsFor(id)
+	if err != nil {
+		return Task{}, err
+	}
+	t.Tags = tags
 	return t, nil
 }
 

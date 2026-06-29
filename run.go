@@ -30,6 +30,16 @@ Run "todo <command> -h" for command-specific help.
 
 func printUsage(w io.Writer) { fmt.Fprint(w, usageText) }
 
+// stringSlice is a flag.Value that accumulates repeated occurrences of a flag,
+// e.g. --tag home --tag urgent.
+type stringSlice []string
+
+func (s *stringSlice) String() string { return strings.Join(*s, ",") }
+func (s *stringSlice) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
 // Run is the single entry seam for the CLI. It executes one command and
 // returns the process exit code: 0 on success, non-zero on failure.
 func Run(args []string, stdout, stderr io.Writer, dbPath string) int {
@@ -76,8 +86,10 @@ func cmdAdd(st *Store, args []string, stdout, stderr io.Writer, now time.Time) i
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	due := fs.String("due", "", "due date: YYYY-MM-DD, today, or tomorrow")
+	var tags stringSlice
+	fs.Var(&tags, "tag", "Tag to attach (repeatable)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: todo add <title> [--due <date>]")
+		fmt.Fprintln(stderr, "Usage: todo add <title> [--due <date>] [--tag <name> ...]")
 		fs.PrintDefaults()
 	}
 	rest, err := parseFlagsPermuted(fs, args)
@@ -100,7 +112,7 @@ func cmdAdd(st *Store, args []string, stdout, stderr io.Writer, now time.Time) i
 		duePtr = &d
 	}
 
-	id, err := st.AddTask(title, duePtr, "", nil, now)
+	id, err := st.AddTask(title, duePtr, "", tags, now)
 	if err != nil {
 		fmt.Fprintf(stderr, "todo: %v\n", err)
 		return 1
@@ -114,15 +126,16 @@ func cmdList(st *Store, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	all := fs.Bool("all", false, "include Done Tasks")
 	status := fs.String("status", "", "filter by status: open, in-progress, or done")
+	tag := fs.String("tag", "", "filter by Tag")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: todo list [--all] [--status open|in-progress|done]")
+		fmt.Fprintln(stderr, "Usage: todo list [--all] [--status open|in-progress|done] [--tag <name>]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
-	filter := ListFilter{All: *all}
+	filter := ListFilter{All: *all, Tag: *tag}
 	if *status != "" {
 		s, ok := parseStatus(*status)
 		if !ok {

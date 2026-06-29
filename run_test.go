@@ -295,6 +295,90 @@ func TestRun_DueOrdering(t *testing.T) {
 	}
 }
 
+// taskTags reads a Task's linked Tag names over a fresh connection.
+func taskTags(t *testing.T, dbPath string, id int64) []string {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	rows, err := db.Query(
+		`SELECT t.name FROM tags t JOIN task_tags tt ON tt.tag_id = t.id WHERE tt.task_id = ? ORDER BY t.name`, id)
+	if err != nil {
+		t.Fatalf("query tags: %v", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, n)
+	}
+	return names
+}
+
+// countTagRows counts rows in the tags table with the given name.
+func countTagRows(t *testing.T, dbPath, name string) int {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM tags WHERE name = ?`, name).Scan(&n); err != nil {
+		t.Fatalf("count tags: %v", err)
+	}
+	return n
+}
+
+func TestRun_Tags(t *testing.T) {
+	run, dbPath := newRunner(t)
+	if code, _, errs := run("add", "Mow lawn", "--tag", "home", "--tag", "weekend"); code != 0 || errs != "" {
+		t.Fatalf("add --tag: code=%d errs=%q", code, errs)
+	}
+	if diff := cmp.Diff([]string{"home", "weekend"}, taskTags(t, dbPath, 1)); diff != "" {
+		t.Errorf("linked tags mismatch (-want +got):\n%s", diff)
+	}
+	if _, out, _ := run("list"); !strings.Contains(out, "#home") || !strings.Contains(out, "#weekend") {
+		t.Errorf("list should display tags, got %q", out)
+	}
+	if _, out, _ := run("show", "1"); !strings.Contains(out, "home") || !strings.Contains(out, "weekend") {
+		t.Errorf("show should display tags, got %q", out)
+	}
+}
+
+func TestRun_TagReuseNoDuplicate(t *testing.T) {
+	run, dbPath := newRunner(t)
+	run("add", "First", "--tag", "errand")
+	run("add", "Second", "--tag", "errand")
+
+	if n := countTagRows(t, dbPath, "errand"); n != 1 {
+		t.Errorf("tag 'errand' row count = %d, want 1 (reused, not duplicated)", n)
+	}
+	if diff := cmp.Diff([]string{"errand"}, taskTags(t, dbPath, 2)); diff != "" {
+		t.Errorf("task 2 tags mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestRun_ListTagFilter(t *testing.T) {
+	run, _ := newRunner(t)
+	run("add", "Groceries", "--tag", "home")
+	run("add", "Deploy", "--tag", "work")
+	run("add", "Laundry", "--tag", "home")
+
+	_, out, _ := run("list", "--tag", "home")
+	if !strings.Contains(out, "Groceries") || !strings.Contains(out, "Laundry") {
+		t.Errorf("list --tag home should include both home Tasks, got %q", out)
+	}
+	if strings.Contains(out, "Deploy") {
+		t.Errorf("list --tag home should exclude the work Task, got %q", out)
+	}
+}
+
 func TestRun_LsAlias(t *testing.T) {
 	run, _ := newRunner(t)
 	run("add", "Task one")
