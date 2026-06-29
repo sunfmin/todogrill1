@@ -63,7 +63,7 @@ type Store struct{ db *sql.DB }
 
 const (
 	tsLayout  = time.RFC3339 // created_at / completed_at
-	dayLayout = "2006-01-02"  // due (day granularity)
+	dayLayout = "2006-01-02" // due (day granularity)
 )
 
 var schemaStmts = []string{

@@ -145,8 +145,8 @@ func TestRun_Lifecycle(t *testing.T) {
 
 func TestRun_ListStatusFilter(t *testing.T) {
 	run, _ := newRunner(t)
-	run("add", "Alpha")   // 1: open
-	run("add", "Bravo")   // 2: in-progress
+	run("add", "Alpha") // 1: open
+	run("add", "Bravo") // 2: in-progress
 	run("start", "2")
 	run("add", "Charlie") // 3: done
 	run("done", "3")
